@@ -1,0 +1,9 @@
+{
+  "id": "uploadslab2dtxt",
+  "name": "UploadSlab2DTxt",
+  "version": "1.0.0",
+  "minAppVersion": "0.20.0",
+  "description": "Converts Obsidian notes back to Slab2D format",
+  "author": "YourName",
+  "isDesktopOnly": false
+}

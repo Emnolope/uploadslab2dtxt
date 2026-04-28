@@ -1,0 +1,180 @@
+const { Plugin, Notice, normalizePath } = require('obsidian');
+
+class UploadSlab2DTxt extends Plugin {
+  async onload() {
+    console.log('Loading UploadSlab2DTxt plugin');
+    this.addRibbonIcon('upload', 'Convert to Slab2D', () => {
+      this.convertVaultToSlab2D();
+    });
+    this.addCommand({
+      id: 'convert-to-slab2d',
+      name: 'Convert Vault to Slab2D format',
+      callback: () => this.convertVaultToSlab2D()
+    });
+    console.log('Loaded UploadSlab2DTxt plugin');
+  }
+
+  async convertVaultToSlab2D() {
+    try {
+      console.log('Ensuring export folder');
+      // Create exports folder if it doesn't exist
+      const exportFolder = 'exports';
+      const exportFolderPath = normalizePath(exportFolder);
+      if (!await this.app.vault.adapter.exists(exportFolderPath)) {
+        await this.app.vault.createFolder(exportFolderPath);
+      }
+      
+      console.log('Grabbing all Markdown files...');
+      const allFiles = this.app.vault.getMarkdownFiles();
+      const files = [];
+      let manifestFile = null;
+      
+      // Filter to separate manifest from regular content files
+      for (const file of allFiles) {
+        if (file.basename === 'uploadslab2dtxt') {
+          manifestFile = file;
+        } else {
+          files.push(file);
+        }
+      }
+      
+      const manifest = await this.app.vault.read(manifestFile);
+      const order = new Map();
+      console.log(`Building manifest`);
+      manifest.
+        split(/\r?\n/).                          // Split lines
+        slice(1).                                // Skip first header line
+        map(line => line.trim()).                // Trim whitespace
+        filter(line => line.length > 0).         // Filter empty lines
+        forEach((filename, index) => {
+          if (!order.has(filename)) {        // only firsts
+            order.set(filename, index);
+          }
+        });
+      
+      console.log(`Sorting files`);
+      files.sort((fileA, fileB) => {
+        const indexA = order.get(fileA.basename) ?? -1;
+        const indexB = order.get(fileB.basename) ?? -1;
+        // fallback to alphabetical sort for stability
+        if (indexA === indexB) {
+          return fileA.basename.localeCompare(fileB.basename);
+        }
+        return indexA < indexB ? -1 : 1;
+      });
+      
+      console.log('Converting files to Slab2D format');
+      const entries = [];
+      for (const file of files) {
+        const content = await this.app.vault.read(file);
+        const processedContent = this.convertObsidianToSlab2D(content, file.basename);
+        entries.push(processedContent);
+      }
+      
+      console.log('Fusing into monolith');
+      // Join all entries with proper line breaks
+      let slab2dContent = entries.join('\n');
+      
+      // Generate timestamp in the format YYYYMMDDHHMMSS
+      const d = new Date();
+      const timestamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}`;
+      
+      // Create the output file path within the exports folder
+      const outputFileName = `${timestamp}_obsidian.txt`;
+      const outputFilePath = normalizePath(`${exportFolder}/${outputFileName}`);
+      
+      // Create the file
+      await this.app.vault.create(outputFilePath, slab2dContent);
+      new Notice(`Converted to Slab2D format and saved as ${outputFileName} in the exports folder!`);
+    } catch (err) {
+      console.error("Error converting to Slab2D:", err);
+      new Notice("Error converting to Slab2D. Check console for details.");
+    }
+  }
+
+  // ----- ALMOST EXACT COPY FROM SLAB2D WEBAPP -----
+  tagChopper(tag) {
+    const spots = ['-', '.', '/', '_', '~', '#'].
+      map(sep => tag.indexOf(sep)).
+      filter(index => index !== -1);
+    const first = Math.min(...spots);
+    return isNaN(first)
+      ? [tag, '', '']
+      : [tag.slice(0, first), tag[first], tag.slice(first + 1)];
+  }
+
+  extractMetadataMarkdown(note) {
+    const metadata = {
+      date: null,
+      tags: [],
+      content: note
+    };
+    //const regex = /^#\s((#[^\s]+\s)+)(.*?)$/;
+    //const regex = /^#\s((\[\[[^\s]+\]\]\s)+)(.*?)$/;
+    //const regex = /^#\s((\[\[[^\s]+\]\]\s*)+)(.*?)$/;
+    const regex = /^#((\s\[\[[^\s]+\]\])+)(?:\s(.*))?$/;
+    //const regex = /^#((\s\[\[[^\s]+\]\])+)(\s(.*))?$/;
+    const match = note.match(regex);
+    if (match) {
+      let tags = match[1].
+        split(/\s+/).
+        filter(Boolean).
+          map(tag => tag.
+            //replace(/^#/, '')
+            slice(2, -2)
+        );
+      for (let i = 0; i < tags.length; i++) {
+        //if (/^date\//.test(tags[i])) {
+        if (/^date#/.test(tags[i])) {
+          metadata.date = this.tagChopper(tags[i])[2];
+          tags.splice(i, 1);
+          break;
+        }
+      }
+      metadata.tags = tags;
+      metadata.content = match[3] || "";
+    }
+    return metadata;
+  }
+
+  convertObsidianToSlab2D(markdownContent, filename) {
+    // Split content into lines
+    const lines = markdownContent.split('\n');
+    const firstLine = lines[0];
+    
+    // Extract metadata from first line
+    const metadata = this.extractMetadataMarkdown(firstLine);
+    
+    let formattedFirstLine = [
+      '#',
+      ...(metadata.date ? [`[[date#${metadata.date}]]`] : []),
+      ...((metadata.tags?.length || metadata.date ? metadata.tags : ['idk']).map(tag => (([a,b,c]) => `[[${a}${(c)?'#'+c:''}]]`)(this.tagChopper(tag)))),
+      //...metadata.tags.map(tag=>(([a,b,c])=>`[[${a}${(c)?'#'+c:''}]]`)(this.tagChopper(tag))),
+      ...(!(
+          /^hash_[0-9A-F]{8}$/i.test(filename.replace(/\.md$/, ''))
+            ||
+          /^hash_[0-9A-F]{16}$/i.test(filename.replace(/\.md$/, ''))
+            ||
+          /^file_\d+$/.test(filename.replace(/\.md$/, ''))
+         )
+         ? 
+         [`\`${filename.replace(/\.md$/, '')}\``] : []
+      ),
+      ...(metadata.content ? [metadata.content] : [])
+    ].join(' ');
+    
+    // Rebuild the content with the formatted first line
+    let formattedResult = [
+      formattedFirstLine,
+      ...lines.slice(1)
+    ].join('\n');
+    
+    return formattedResult;
+  }
+  
+  onunload() {
+    console.log('Unloading UploadSlab2DTxt plugin');
+  }
+}
+
+module.exports = UploadSlab2DTxt;
